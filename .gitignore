@@ -1,0 +1,6 @@
+# Archive de distribution, regeneree par Build-Package.ps1
+dist/
+*.zip
+
+# Journaux locaux
+*.log
