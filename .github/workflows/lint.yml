@@ -1,0 +1,57 @@
+name: lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  psscriptanalyzer:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
+
+      - name: Check syntax of every script
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Recurse -Include *.ps1, *.psd1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            if ($_.Extension -eq '.psd1') {
+              $null = [System.Management.Automation.Language.Parser]::ParseInput(
+                (Get-Content -LiteralPath $_.FullName -Raw), $_.FullName, [ref]$tokens, [ref]$errors)
+            }
+            else {
+              $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            }
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Host "::error file=$($_.Extent.File),line=$($_.Extent.StartLineNumber)::$($_.Message)" }
+            }
+          }
+          if ($failed) { throw 'Syntax errors found.' }
+          Write-Host 'Syntax OK.'
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 `
+            -Severity Error, Warning
+          $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          if ($results) {
+            $results | ForEach-Object {
+              Write-Host "::error file=$($_.ScriptName),line=$($_.Line)::$($_.RuleName): $($_.Message)"
+            }
+            throw "$($results.Count) PSScriptAnalyzer finding(s)."
+          }
+          Write-Host 'PSScriptAnalyzer: no findings.'

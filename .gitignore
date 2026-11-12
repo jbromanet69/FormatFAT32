@@ -1,0 +1,19 @@
+# Journaux produits par l'outil / logs written by the tool
+*.log
+logs/
+
+# Binaires tiers : jamais distribués / third-party binaries are never shipped
+fat32format.exe
+fat32format-*.zip
+
+# Archives de distribution / distribution archives
+*.zip
+
+# Windows / éditeurs / editors
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.bak
+*.tmp
