@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Construit l'archive portable FormatFAT32 (dossier + ZIP).
