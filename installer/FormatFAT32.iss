@@ -10,7 +10,7 @@
 ; ---------------------------------------------------------------------------
 
 #define AppName        "FormatFAT32"
-#define AppVersion     "1.1.0"
+#define AppVersion     "1.2.0"
 #define AppPublisher   "Jean-Baptiste Romanet"
 #define AppURL         "https://github.com/jbromanet69/FormatFAT32"
 #define RepoRoot       ".."

@@ -70,7 +70,7 @@ any problem; only *creating* it needs a recent build.
 
 ### Recommended: the setup program
 
-Download `FormatFAT32-1.1.0-setup.exe` from
+Download `FormatFAT32-1.2.0-setup.exe` from
 [Releases](https://github.com/jbromanet69/FormatFAT32/releases) and run it.
 
 - Setup is available in **7 languages**; the chosen language becomes the app language.
@@ -83,8 +83,8 @@ Download `FormatFAT32-1.1.0-setup.exe` from
 Silent / scripted deployment:
 
 ```bat
-FormatFAT32-1.1.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-FormatFAT32-1.1.0-setup.exe /VERYSILENT /CURRENTUSER /LANG=de /SUPPRESSMSGBOXES
+FormatFAT32-1.2.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+FormatFAT32-1.2.0-setup.exe /VERYSILENT /CURRENTUSER /LANG=de /SUPPRESSMSGBOXES
 ```
 
 ### Alternative: the PowerShell installer
@@ -185,6 +185,7 @@ FormatFAT32/
 ├─ tools\New-Icon.ps1           # generates FormatFAT32.ico and docs\logo.png
 ├─ docs\                        # screenshots and logo used by the READMEs
 ├─ .github\workflows\           # lint + installer build
+├─ CHANGELOG.md                 # release history
 └─ LICENSE
 ```
 
