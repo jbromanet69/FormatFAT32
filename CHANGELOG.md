@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The build workflow uses `actions/checkout@v7`, `actions/upload-artifact@v7` and
+  `softprops/action-gh-release@v3`, all running on the Node.js 24 runtime, which
+  silences the Node.js 20 deprecation warning on every run.
+- `.editorconfig` saves `*.ps1` and `*.psd1` files as UTF-8 with BOM, so the
+  `PSUseBOMForUnicodeEncodedFile` lint failure cannot come back.
+
 ## [1.2.0] — 2026-11-13
 
 ### Added
