@@ -34,6 +34,7 @@
 param(
     [string]$InstallDir,
     [ValidateSet('HKLM', 'HKCU')][string]$Hive = 'HKLM',
+    [ValidateSet('en', 'fr', 'de', 'es', 'it', 'pt', 'nl')][string]$Language,
     [string]$Publisher,
     [switch]$NoShortcut,
     [switch]$Quiet,
@@ -43,7 +44,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'FormatFAT32'
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 $script:MenuText = 'Formater en FAT32'
 
 function Test-IsAdmin {
@@ -106,6 +107,7 @@ try {
             '-File', (ConvertTo-QuotedArgument $PSCommandPath), '-Hive', $Hive)
         if ($InstallDir) { $arguments += @('-InstallDir', (ConvertTo-QuotedArgument $InstallDir)) }
         if ($Publisher) { $arguments += @('-Publisher', (ConvertTo-QuotedArgument $Publisher)) }
+        if ($Language) { $arguments += @('-Language', $Language) }
         if ($NoShortcut) { $arguments += '-NoShortcut' }
         if ($Quiet) { $arguments += '-Quiet' }
         $arguments += '-Elevated'
@@ -168,6 +170,23 @@ try {
     $targetUninstall = Join-Path $InstallDir 'Uninstall-FormatFAT32.ps1'
     Copy-Item -LiteralPath $sourceScript -Destination $targetScript -Force
     Copy-Item -LiteralPath $sourceUninstall -Destination $targetUninstall -Force
+
+    $sourceVbs = Join-Path $PSScriptRoot 'Launch-FormatFAT32.vbs'
+    if (-not (Test-Path -LiteralPath $sourceVbs)) { throw "Fichier introuvable : $sourceVbs" }
+    $targetVbs = Join-Path $InstallDir 'Launch-FormatFAT32.vbs'
+    Copy-Item -LiteralPath $sourceVbs -Destination $targetVbs -Force
+
+    $sourceLang = Join-Path $PSScriptRoot 'lang'
+    if (-not (Test-Path -LiteralPath $sourceLang)) { throw "Dossier introuvable : $sourceLang" }
+    $targetLang = Join-Path $InstallDir 'lang'
+    if (-not (Test-Path -LiteralPath $targetLang)) { New-Item -ItemType Directory -Path $targetLang -Force | Out-Null }
+    Copy-Item -Path (Join-Path $sourceLang '*.psd1') -Destination $targetLang -Force
+
+    $uiLanguage = if ($Language) { $Language } else { [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName.ToLowerInvariant() }
+    if ($uiLanguage.Length -gt 2) { $uiLanguage = $uiLanguage.Substring(0, 2) }
+    if (-not (Test-Path -LiteralPath (Join-Path $targetLang ("{0}.psd1" -f $uiLanguage)))) { $uiLanguage = 'en' }
+    Set-Content -LiteralPath (Join-Path $InstallDir 'language.txt') -Value $uiLanguage -Encoding ASCII
+    Write-Step ("Langue de l'interface : {0}" -f $uiLanguage)
     Write-Step 'Scripts copiés.'
 
     foreach ($doc in @('README.md', 'README.fr.md', 'LICENSE')) {
@@ -195,7 +214,7 @@ try {
 
     $shellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $iconPath = Join-Path $env:SystemRoot 'System32\shell32.dll'
-    $commandLine = '"{0}" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "{1}" -Drive %1' -f $shellExe, $targetScript
+    $commandLine = '"{0}" "{1}" "%1"' -f (Join-Path $env:SystemRoot 'System32\wscript.exe'), $targetVbs
 
     New-ItemProperty -Path $verbPath -Name 'MUIVerb' -Value $script:MenuText -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $verbPath -Name 'Icon' -Value ('{0},-7' -f $iconPath) -PropertyType String -Force | Out-Null
@@ -211,8 +230,8 @@ try {
         $shortcutPath = Join-Path $startMenu ("{0}.lnk" -f $script:MenuText)
         $wsh = New-Object -ComObject WScript.Shell
         $shortcut = $wsh.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $shellExe
-        $shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "{0}"' -f $targetScript
+        $shortcut.TargetPath = (Join-Path $env:SystemRoot 'System32\wscript.exe')
+        $shortcut.Arguments = '"{0}"' -f $targetVbs
         $shortcut.WorkingDirectory = $InstallDir
         $shortcut.IconLocation = '{0},7' -f $iconPath
         $shortcut.Description = 'Formater une carte SD ou une clé USB en FAT32'
@@ -241,8 +260,10 @@ try {
     $checks = @()
     $checks += [pscustomobject]@{ Test = 'Script installé'; Ok = (Test-Path -LiteralPath $targetScript) }
     $checks += [pscustomobject]@{ Test = 'Désinstalleur installé'; Ok = (Test-Path -LiteralPath $targetUninstall) }
+    $checks += [pscustomobject]@{ Test = 'Lanceur sans console installé'; Ok = (Test-Path -LiteralPath (Join-Path $InstallDir 'Launch-FormatFAT32.vbs')) }
+    $checks += [pscustomobject]@{ Test = 'Fichiers de langue installés'; Ok = ((Get-ChildItem -LiteralPath (Join-Path $InstallDir 'lang') -Filter '*.psd1' -ErrorAction SilentlyContinue).Count -ge 7) }
     $checks += [pscustomobject]@{ Test = 'Verbe enregistré'; Ok = ((Get-ItemProperty -Path $verbPath -ErrorAction SilentlyContinue).MUIVerb -eq $script:MenuText) }
-    $checks += [pscustomobject]@{ Test = 'Commande enregistrée'; Ok = ((Get-Item -Path $commandPath).GetValue('') -like '*Format-RemovableFat32.ps1*') }
+    $checks += [pscustomobject]@{ Test = 'Commande enregistrée'; Ok = ((Get-Item -Path $commandPath).GetValue('') -like '*Launch-FormatFAT32.vbs*') }
     if ($shortcutPath) {
         $checks += [pscustomobject]@{ Test = 'Raccourci créé'; Ok = (Test-Path -LiteralPath $shortcutPath) }
     }

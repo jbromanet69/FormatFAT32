@@ -1,45 +1,50 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    Formate en FAT32 un disque amovible (carte SD, clé USB), en formatage rapide.
+    Formats a removable drive (SD card, USB stick) as FAT32, quick format.
 
 .DESCRIPTION
-    Cible uniquement les volumes amovibles (sauf -AllowFixed), demande une confirmation,
-    lance format.com /FS:FAT32, vérifie le résultat et affiche un compte rendu.
-    S'élève automatiquement en administrateur (UAC) si nécessaire.
-    Un journal est écrit dans %ProgramData%\FormatFAT32\logs (compte administrateur)
-    ou %LOCALAPPDATA%\FormatFAT32\logs (compte standard).
+    Targets removable volumes only (unless -AllowFixed), asks for confirmation,
+    runs format.com /FS:FAT32, verifies the result and reports back.
+    Self-elevates (UAC) when needed. Logs to %ProgramData%\FormatFAT32\logs
+    (administrator) or %LOCALAPPDATA%\FormatFAT32\logs (standard user).
 
-    L'outil n'utilise que les composants de Windows (format.com). Aucun binaire tiers.
+    Uses only Microsoft's format.com. No third-party binary.
 
-    Prérequis pour le FAT32 au-delà de 32 Go : Windows 11 24H2 build 26100.8313
-    ou 25H2 build 26200.8313 (ou version ultérieure). Jusqu'à 32 Go, toute version
-    de Windows disposant de PowerShell 5.1 convient.
+    Requires Windows 11 24H2 build 26100.8313 / 25H2 build 26200.8313 (or later)
+    to create FAT32 volumes larger than 32 GB. Up to 32 GB any Windows with
+    PowerShell 5.1 works.
+
+    User interface strings live in .\lang\<code>.psd1 (en, fr, de, es, it, pt, nl).
 
 .PARAMETER Drive
-    Lettre du lecteur ("E", "E:", "E:\"). Si omis, une fenêtre de sélection s'ouvre.
+    Drive letter ("E", "E:", "E:\"). If omitted, a picker window is shown.
 
 .PARAMETER Label
-    Nouveau libellé du volume (11 caractères max). Par défaut, le libellé actuel est conservé.
+    New volume label (11 characters max). Defaults to the current label.
 
 .PARAMETER ClusterSizeKb
-    Taille de cluster en Ko. Par défaut, Windows choisit.
+    Cluster size in KB. Windows default when omitted.
+
+.PARAMETER Language
+    UI language code (en, fr, de, es, it, pt, nl). Defaults to language.txt,
+    then to the Windows display language, then to English.
 
 .PARAMETER AllowFixed
-    Autorise aussi les disques fixes (certains lecteurs de cartes se déclarent « Fixe »).
-    Le disque système est toujours refusé.
+    Also allow drives reported as "Fixed" (some card readers). The system drive
+    is always refused.
 
 .PARAMETER Yes
-    Ne pas afficher la confirmation (automatisation).
+    Skip the confirmation dialog (automation).
 
 .PARAMETER DryRun
-    Affiche le plan d'action sans rien formater (sortie console).
+    Print the action plan without formatting (console output).
 
 .PARAMETER SelfTest
-    Vérifie que le script et WinForms sont opérationnels, puis quitte.
+    Check script + WinForms + report the Windows build, then exit.
 
 .PARAMETER SkipVersionCheck
-    Passe outre le contrôle de version de Windows (utile si la détection est erronée).
+    Ignore the Windows build check for FAT32 volumes above 32 GB.
 
 .EXAMPLE
     .\Format-RemovableFat32.ps1 -Drive E:
@@ -48,7 +53,7 @@
     .\Format-RemovableFat32.ps1 -Drive E: -DryRun
 
 .EXAMPLE
-    .\Format-RemovableFat32.ps1
+    .\Format-RemovableFat32.ps1 -Language de
 #>
 [CmdletBinding()]
 param(
@@ -58,6 +63,8 @@ param(
     [string]$Label,
 
     [int]$ClusterSizeKb = 0,
+
+    [string]$Language,
 
     [switch]$AllowFixed,
     [switch]$Yes,
@@ -71,6 +78,82 @@ $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'FormatFAT32'
 $script:LogFile = $null
+$script:Strings = @{}
+$script:FallbackStrings = @{}
+$script:LanguageCode = 'en'
+$script:visualStylesEnabled = $false
+$script:dialogResult = 'OK'
+
+# --------------------------------------------------------------------------
+# Localisation
+# --------------------------------------------------------------------------
+
+function Initialize-Localization {
+    param([string]$Requested)
+
+    $langDir = Join-Path $PSScriptRoot 'lang'
+    $enPath = Join-Path $langDir 'en.psd1'
+    if (Test-Path -LiteralPath $enPath) {
+        $script:FallbackStrings = Import-PowerShellDataFile -LiteralPath $enPath
+    }
+
+    $code = $null
+    if ($Requested) { $code = $Requested }
+    if (-not $code) {
+        $languageFile = Join-Path $PSScriptRoot 'language.txt'
+        if (Test-Path -LiteralPath $languageFile) {
+            $code = (Get-Content -LiteralPath $languageFile -TotalCount 1).Trim()
+        }
+    }
+    if (-not $code) {
+        $code = [System.Globalization.CultureInfo]::CurrentUICulture.TwoLetterISOLanguageName
+    }
+    $code = $code.ToLowerInvariant()
+    if ($code.Length -gt 2) { $code = $code.Substring(0, 2) }
+
+    $path = Join-Path $langDir ("{0}.psd1" -f $code)
+    if (-not (Test-Path -LiteralPath $path)) {
+        $code = 'en'
+        $path = $enPath
+    }
+
+    if (Test-Path -LiteralPath $path) {
+        $script:Strings = Import-PowerShellDataFile -LiteralPath $path
+    }
+    else {
+        $script:Strings = $script:FallbackStrings
+    }
+    $script:LanguageCode = $code
+}
+
+function Enable-VisualStyles {
+    if ($script:visualStylesEnabled) { return }
+    try {
+        [System.Windows.Forms.Application]::EnableVisualStyles()
+    }
+    catch {
+        # Theme is cosmetic only.
+    }
+    $script:visualStylesEnabled = $true
+}
+
+function Get-UiText {
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [object[]]$Arguments
+    )
+
+    $value = $null
+    if ($script:Strings.ContainsKey($Key)) { $value = $script:Strings[$Key] }
+    elseif ($script:FallbackStrings.ContainsKey($Key)) { $value = $script:FallbackStrings[$Key] }
+    else { return "[$Key]" }
+
+    if ($Arguments -and $Arguments.Count -gt 0) {
+        try { return ([string]$value -f $Arguments) }
+        catch { return [string]$value }
+    }
+    return [string]$value
+}
 
 # --------------------------------------------------------------------------
 # Infrastructure
@@ -108,6 +191,7 @@ function Initialize-Log {
     }
 }
 
+# Logs are deliberately English-only: they are support artefacts, not UI.
 function Add-LogEntry {
     param([string]$Message)
     if (-not $script:LogFile) { return }
@@ -116,28 +200,146 @@ function Add-LogEntry {
         Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
     }
     catch {
-        # Le journal ne doit jamais faire échouer le formatage.
+        # Logging must never break the formatting flow.
     }
 }
 
 function Show-Dialog {
     param(
         [Parameter(Mandatory)][string]$Text,
-        [string]$Title = 'Format FAT32',
+        [string]$Title,
         [ValidateSet('Information', 'Warning', 'Error', 'Question')][string]$Icon = 'Information',
         [ValidateSet('OK', 'OKCancel', 'YesNo', 'YesNoCancel')][string]$Buttons = 'OK'
     )
+    if (-not $Title) { $Title = Get-UiText 'DialogTitle' }
+
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        $default = 'Button1'
-        if ($Buttons -eq 'YesNo' -or $Buttons -eq 'YesNoCancel') { $default = 'Button2' }
-        $result = [System.Windows.Forms.MessageBox]::Show(
-            $Text,
-            $Title,
-            [System.Windows.Forms.MessageBoxButtons]::$Buttons,
-            [System.Windows.Forms.MessageBoxIcon]::$Icon,
-            [System.Windows.Forms.MessageBoxDefaultButton]::$default)
-        return [string]$result
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        Enable-VisualStyles
+
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = $Title
+        $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+        $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $form.ShowInTaskbar = $false
+        $form.TopMost = $true
+        $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Font
+        $form.Font = New-Object System.Drawing.Font 'Segoe UI', 9
+
+        $margin = 18
+        $iconSize = 32
+        $maxTextWidth = 540
+
+        $picture = New-Object System.Windows.Forms.PictureBox
+        $picture.Size = New-Object System.Drawing.Size $iconSize, $iconSize
+        $picture.Location = New-Object System.Drawing.Point $margin, $margin
+        $picture.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::CenterImage
+        switch ($Icon) {
+            'Warning' { $picture.Image = [System.Drawing.SystemIcons]::Warning.ToBitmap() }
+            'Error' { $picture.Image = [System.Drawing.SystemIcons]::Error.ToBitmap() }
+            'Question' { $picture.Image = [System.Drawing.SystemIcons]::Question.ToBitmap() }
+            default { $picture.Image = [System.Drawing.SystemIcons]::Information.ToBitmap() }
+        }
+        $form.Controls.Add($picture)
+
+        # Two-pass measurement: choose a width, then measure the height at that width
+        # so long texts (and long unbreakable paths) are never clipped.
+        $textLeft = $margin + $iconSize + 14
+        $measureFlags = [System.Windows.Forms.TextFormatFlags]::WordBreak
+        $naturalWidth = [System.Windows.Forms.TextRenderer]::MeasureText($Text, $form.Font).Width
+        if (($naturalWidth + 12) -le $maxTextWidth) {
+            $textWidth = [Math]::Max($naturalWidth + 12, 240)
+        }
+        else {
+            $textWidth = $maxTextWidth
+        }
+        $measured = [System.Windows.Forms.TextRenderer]::MeasureText(
+            $Text, $form.Font, (New-Object System.Drawing.Size $textWidth, 2400), $measureFlags)
+        if ($measured.Width -gt $textWidth) {
+            $textWidth = [Math]::Min($measured.Width + 12, 760)
+            $measured = [System.Windows.Forms.TextRenderer]::MeasureText(
+                $Text, $form.Font, (New-Object System.Drawing.Size $textWidth, 2400), $measureFlags)
+        }
+        $textHeight = $measured.Height + 8
+
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = $Text
+        $label.AutoSize = $false
+        $label.Location = New-Object System.Drawing.Point $textLeft, ($margin + 4)
+        $label.Size = New-Object System.Drawing.Size $textWidth, $textHeight
+        $form.Controls.Add($label)
+
+        $specs = @()
+        switch ($Buttons) {
+            'OK' {
+                $specs = @([pscustomobject]@{ Result = 'OK'; Text = (Get-UiText 'ButtonOk'); Default = $true; Cancel = $false })
+            }
+            'OKCancel' {
+                $specs = @(
+                    [pscustomobject]@{ Result = 'OK'; Text = (Get-UiText 'ButtonOk'); Default = $true; Cancel = $false },
+                    [pscustomobject]@{ Result = 'Cancel'; Text = (Get-UiText 'ButtonCancel'); Default = $false; Cancel = $true })
+            }
+            'YesNo' {
+                $specs = @(
+                    [pscustomobject]@{ Result = 'Yes'; Text = (Get-UiText 'ButtonYes'); Default = $false; Cancel = $false },
+                    [pscustomobject]@{ Result = 'No'; Text = (Get-UiText 'ButtonNo'); Default = $true; Cancel = $true })
+            }
+            'YesNoCancel' {
+                $specs = @(
+                    [pscustomobject]@{ Result = 'Yes'; Text = (Get-UiText 'ButtonYes'); Default = $false; Cancel = $false },
+                    [pscustomobject]@{ Result = 'No'; Text = (Get-UiText 'ButtonNo'); Default = $true; Cancel = $false },
+                    [pscustomobject]@{ Result = 'Cancel'; Text = (Get-UiText 'ButtonCancel'); Default = $false; Cancel = $true })
+            }
+        }
+
+        $buttonHeight = 30
+        $gap = 8
+        $widths = @()
+        foreach ($spec in $specs) {
+            $size = [System.Windows.Forms.TextRenderer]::MeasureText($spec.Text, $form.Font)
+            $widths += [Math]::Max($size.Width + 34, 92)
+        }
+        $totalWidth = ($widths | Measure-Object -Sum).Sum + ($gap * ($specs.Count - 1))
+
+        $clientWidth = [Math]::Max($textLeft + $textWidth + $margin, $totalWidth + (2 * $margin))
+        $buttonsTop = $margin + 4 + $textHeight + 20
+        $form.ClientSize = New-Object System.Drawing.Size $clientWidth, ($buttonsTop + $buttonHeight + $margin)
+
+        $script:dialogResult = $specs[0].Result
+        if ($Buttons -eq 'YesNo' -or $Buttons -eq 'YesNoCancel') { $script:dialogResult = 'No' }
+        if ($Buttons -eq 'OKCancel') { $script:dialogResult = 'Cancel' }
+
+        $x = $clientWidth - $margin
+        $acceptButton = $null
+        $cancelButton = $null
+        for ($i = $specs.Count - 1; $i -ge 0; $i--) {
+            $spec = $specs[$i]
+            $x -= $widths[$i]
+            $button = New-Object System.Windows.Forms.Button
+            $button.Text = $spec.Text
+            $button.Size = New-Object System.Drawing.Size $widths[$i], $buttonHeight
+            $button.Location = New-Object System.Drawing.Point $x, $buttonsTop
+            $button.Tag = $spec.Result
+            $button.Add_Click({
+                    param($control)
+                    $script:dialogResult = [string]$control.Tag
+                    $control.FindForm().Close()
+                })
+            $form.Controls.Add($button)
+            if ($spec.Default) { $acceptButton = $button }
+            if ($spec.Cancel) { $cancelButton = $button }
+            $x -= $gap
+        }
+        if ($acceptButton) { $form.AcceptButton = $acceptButton }
+        if ($cancelButton) { $form.CancelButton = $cancelButton }
+
+        [void]$form.ShowDialog()
+        $result = $script:dialogResult
+        $form.Dispose()
+        return $result
     }
     catch {
         Write-Host ''
@@ -156,11 +358,11 @@ function ConvertTo-QuotedArgument {
 
 function Get-LogPath {
     if ($script:LogFile) { return $script:LogFile }
-    return 'indisponible'
+    return 'n/a'
 }
 
 # --------------------------------------------------------------------------
-# Disques
+# Drives
 # --------------------------------------------------------------------------
 
 function Resolve-DriveLetter {
@@ -187,7 +389,6 @@ function Get-RemovableVolumes {
             Label      = [string]$disk.VolumeName
             FileSystem = [string]$disk.FileSystem
             SizeBytes  = [uint64]$disk.Size
-            SizeGB     = [math]::Round($disk.Size / 1GB, 1)
             DriveType  = [int]$disk.DriveType
         }
     }
@@ -196,23 +397,23 @@ function Get-RemovableVolumes {
 
 function Format-Size {
     param([uint64]$Bytes)
-    if ($Bytes -ge 1GB) { return ('{0:N1} Go' -f ($Bytes / 1GB)) }
-    if ($Bytes -ge 1MB) { return ('{0:N0} Mo' -f ($Bytes / 1MB)) }
-    if ($Bytes -ge 1KB) { return ('{0:N0} Ko' -f ($Bytes / 1KB)) }
-    return ('{0} o' -f $Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N1} {1}' -f ($Bytes / 1GB), (Get-UiText 'SizeGB')) }
+    if ($Bytes -ge 1MB) { return ('{0:N0} {1}' -f ($Bytes / 1MB), (Get-UiText 'SizeMB')) }
+    if ($Bytes -ge 1KB) { return ('{0:N0} {1}' -f ($Bytes / 1KB), (Get-UiText 'SizeKB')) }
+    return ('{0} {1}' -f $Bytes, (Get-UiText 'SizeBytes'))
 }
 
 function Get-DriveTypeName {
     param([int]$Type)
     switch ($Type) {
-        0 { 'Inconnu' }
-        1 { 'Sans racine' }
-        2 { 'Amovible' }
-        3 { 'Fixe' }
-        4 { 'Réseau' }
-        5 { 'CD-ROM' }
-        6 { 'RAM' }
-        default { "Type $Type" }
+        0 { Get-UiText 'DriveTypeUnknown' }
+        1 { Get-UiText 'DriveTypeNoRoot' }
+        2 { Get-UiText 'DriveTypeRemovable' }
+        3 { Get-UiText 'DriveTypeFixed' }
+        4 { Get-UiText 'DriveTypeNetwork' }
+        5 { Get-UiText 'DriveTypeCdRom' }
+        6 { Get-UiText 'DriveTypeRam' }
+        default { Get-UiText 'DriveTypeOther' @($Type) }
     }
 }
 
@@ -229,17 +430,14 @@ function Get-WindowsBuildInfo {
     }
 
     $display = if ($props -and $props.DisplayVersion) { [string]$props.DisplayVersion } else { '' }
-    $product = if ($props -and $props.ProductName) { [string]$props.ProductName } else { '' }
 
-    # FAT32 > 32 Go en ligne de commande : disponible depuis 24H2 (26100.8313)
-    # et 25H2 (26200.8313), donc pour tout build 26200 ou ultérieur.
+    # FAT32 above 32 GB via command line: 24H2 (26100.8313) and 25H2 (26200.8313)+.
     $supportsLargeFat32 = (($build -eq 26100) -and ($ubr -ge 8313)) -or ($build -ge 26200)
 
     return [pscustomobject]@{
         Build              = $build
         UBR                = $ubr
         DisplayVersion     = $display
-        ProductName        = $product
         SupportsLargeFat32 = $supportsLargeFat32
         VersionText        = ("Windows {0} build {1}.{2}" -f $display, $build, $ubr).Trim()
     }
@@ -257,58 +455,65 @@ function Wait-ForFat32 {
     return $state
 }
 
+# --------------------------------------------------------------------------
+# Picker
+# --------------------------------------------------------------------------
+
 function New-VolumePicker {
     param([object[]]$Volumes)
 
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
     Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    Enable-VisualStyles
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Formater en FAT32'
-    $form.ClientSize = New-Object System.Drawing.Size(620, 350)
+    $form.Text = Get-UiText 'PickerTitle'
+    $form.ClientSize = New-Object System.Drawing.Size(640, 350)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
     $form.TopMost = $true
+    $form.Font = New-Object System.Drawing.Font 'Segoe UI', 9
 
     $intro = New-Object System.Windows.Forms.Label
-    $intro.Text = 'Sélectionnez le disque amovible à formater en FAT32 :'
-    $intro.Location = New-Object System.Drawing.Point(12, 12)
+    $intro.Text = Get-UiText 'PickerIntro'
+    $intro.Location = New-Object System.Drawing.Point(14, 12)
     $intro.AutoSize = $true
     $form.Controls.Add($intro)
 
     $list = New-Object System.Windows.Forms.ListBox
-    $list.Location = New-Object System.Drawing.Point(12, 38)
-    $list.Size = New-Object System.Drawing.Size(596, 230)
+    $list.Location = New-Object System.Drawing.Point(14, 38)
+    $list.Size = New-Object System.Drawing.Size(612, 230)
     $list.Font = New-Object System.Drawing.Font 'Consolas', 9.5
     $list.IntegralHeight = $false
+    $noLabel = Get-UiText 'VolumeNoLabel'
     foreach ($volume in $Volumes) {
-        $name = if ($volume.Label) { $volume.Label } else { '(sans nom)' }
-        $fs = if ($volume.FileSystem) { $volume.FileSystem } else { 'RAW' }
-        $null = $list.Items.Add(('{0}:  {1,-18} {2,10}  {3}' -f $volume.Letter, $name, (Format-Size $volume.SizeBytes), $fs))
+        $name = if ($volume.Label) { $volume.Label } else { $noLabel }
+        $fs = if ($volume.FileSystem) { $volume.FileSystem } else { Get-UiText 'VolumeRaw' }
+        $null = $list.Items.Add((Get-UiText 'VolumeListItem' @($volume.Letter, $name, (Format-Size $volume.SizeBytes), $fs)))
     }
     $list.SelectedIndex = 0
     $form.Controls.Add($list)
 
     $warning = New-Object System.Windows.Forms.Label
-    $warning.Text = 'Le contenu du disque sélectionné sera définitivement effacé.'
+    $warning.Text = Get-UiText 'PickerWarning'
     $warning.ForeColor = [System.Drawing.Color]::Firebrick
-    $warning.Location = New-Object System.Drawing.Point(12, 274)
+    $warning.Location = New-Object System.Drawing.Point(14, 274)
     $warning.AutoSize = $true
     $form.Controls.Add($warning)
 
     $ok = New-Object System.Windows.Forms.Button
-    $ok.Text = 'Formater en FAT32'
-    $ok.Size = New-Object System.Drawing.Size(170, 30)
-    $ok.Location = New-Object System.Drawing.Point(258, 300)
+    $ok.Text = Get-UiText 'PickerOk'
+    $ok.Size = New-Object System.Drawing.Size(180, 30)
+    $ok.Location = New-Object System.Drawing.Point(268, 300)
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $form.Controls.Add($ok)
 
     $cancel = New-Object System.Windows.Forms.Button
-    $cancel.Text = 'Annuler'
-    $cancel.Size = New-Object System.Drawing.Size(150, 30)
-    $cancel.Location = New-Object System.Drawing.Point(458, 300)
+    $cancel.Text = Get-UiText 'PickerCancel'
+    $cancel.Size = New-Object System.Drawing.Size(160, 30)
+    $cancel.Location = New-Object System.Drawing.Point(466, 300)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.Controls.Add($cancel)
 
@@ -325,7 +530,7 @@ function New-VolumePicker {
 function Select-RemovableVolume {
     $volumes = @(Get-RemovableVolumes)
     if ($volumes.Count -eq 0) {
-        Show-Dialog -Text "Aucun disque amovible prêt n'a été détecté.`r`n`r`nInsérez une carte SD ou une clé USB, puis réessayez." -Icon Warning | Out-Null
+        Show-Dialog -Text (Get-UiText 'PickerEmpty') -Icon Warning | Out-Null
         return $null
     }
 
@@ -344,7 +549,7 @@ function Select-RemovableVolume {
 }
 
 # --------------------------------------------------------------------------
-# Formatage
+# Formatting
 # --------------------------------------------------------------------------
 
 function Invoke-NativeFormat {
@@ -356,7 +561,7 @@ function Invoke-NativeFormat {
 
     $exe = Join-Path $env:SystemRoot 'System32\format.com'
     if (-not (Test-Path -LiteralPath $exe)) {
-        throw "format.com est introuvable dans $env:SystemRoot\System32."
+        throw (Get-UiText 'ErrorFormatMissing' @($env:SystemRoot))
     }
 
     $arguments = @(('{0}:' -f $Letter), '/FS:FAT32', '/Q', '/Y')
@@ -379,19 +584,18 @@ function Invoke-NativeFormat {
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
 
-    # Répond aux invites éventuelles (confirmation, libellé courant).
     try {
         $process.StandardInput.Write("Y`r`n")
         $process.StandardInput.Close()
     }
     catch {
-        # L'entrée standard peut déjà être fermée : sans conséquence avec /Y.
+        # Standard input may already be closed; harmless with /Y.
     }
 
     $finished = $process.WaitForExit(900000)
     if (-not $finished) {
         try { $process.Kill() } catch { }
-        throw "Délai dépassé : format.com n'a pas terminé en 15 minutes."
+        throw (Get-UiText 'ErrorFormatTimeout')
     }
 
     $process.WaitForExit()
@@ -419,9 +623,10 @@ function Get-VolumeDetails {
 }
 
 # --------------------------------------------------------------------------
-# Exécution
+# Main
 # --------------------------------------------------------------------------
 
+Initialize-Localization -Requested $Language
 Initialize-Log
 
 try {
@@ -431,7 +636,6 @@ try {
             Label      = 'TEST'
             FileSystem = 'exFAT'
             SizeBytes  = [uint64]64GB
-            SizeGB     = 64.0
             DriveType  = 2
         })
         $picker = New-VolumePicker -Volumes $fake
@@ -439,18 +643,19 @@ try {
         $picker.Form.Dispose()
         $volumes = @(Get-RemovableVolumes)
         $buildInfo = Get-WindowsBuildInfo
-        Write-Host ("SelfTest OK | PowerShell {0} | Admin={1} | Disques amovibles={2} | Fenêtre={3} élément(s)" -f $PSVersionTable.PSVersion, (Test-IsAdmin), $volumes.Count, $itemCount)
-        Write-Host ("Windows : {0} | FAT32 > 32 Go : {1}" -f $buildInfo.VersionText, $(if ($buildInfo.SupportsLargeFat32) { 'pris en charge' } else { 'non pris en charge' }))
+        Write-Host ("SelfTest OK | PowerShell {0} | Admin={1} | Removable={2} | Picker={3} item(s)" -f $PSVersionTable.PSVersion, (Test-IsAdmin), $volumes.Count, $itemCount)
+        Write-Host ("Language: {0} | {1} | FAT32 > 32 GB: {2}" -f $script:LanguageCode, $buildInfo.VersionText, $(if ($buildInfo.SupportsLargeFat32) { 'supported' } else { 'NOT supported' }))
         exit 0
     }
 
     $isAdmin = Test-IsAdmin
 
     if (-not $isAdmin -and -not $DryRun -and -not $Elevated) {
-        Add-LogEntry "Relance en administrateur (demande initiale : Drive=$Drive)."
+        Add-LogEntry "Elevation requested (initial request: Drive=$Drive, Language=$($script:LanguageCode))."
         $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-STA',
-            '-File', (ConvertTo-QuotedArgument $PSCommandPath))
+            '-File', (ConvertTo-QuotedArgument $PSCommandPath),
+            '-Language', $script:LanguageCode)
         if ($Drive) { $arguments += @('-Drive', (ConvertTo-QuotedArgument $Drive)) }
         if ($Label) { $arguments += @('-Label', (ConvertTo-QuotedArgument $Label)) }
         if ($ClusterSizeKb -gt 0) { $arguments += @('-ClusterSizeKb', "$ClusterSizeKb") }
@@ -463,9 +668,8 @@ try {
             Start-Process -FilePath $shell -ArgumentList ($arguments -join ' ') -Verb RunAs -Wait -ErrorAction Stop
         }
         catch {
-            Add-LogEntry "Élévation refusée : $($_.Exception.Message)"
-            Show-Dialog -Text ("Droits administrateur requis pour formater un disque.`r`n`r`n" +
-                "L'élévation a été refusée ou annulée.`r`n`r`n" + $_.Exception.Message) -Icon Warning | Out-Null
+            Add-LogEntry ("Elevation denied: " + $_.Exception.Message)
+            Show-Dialog -Text (Get-UiText 'ErrorElevationDenied' @($_.Exception.Message)) -Icon Warning | Out-Null
             exit 4
         }
         exit 0
@@ -473,10 +677,10 @@ try {
 
     $letter = Resolve-DriveLetter $Drive
     if (-not $letter) {
-        if ($Drive) { throw "Lettre de lecteur invalide : '$Drive'." }
+        if ($Drive) { throw (Get-UiText 'ErrorInvalidLetter' @($Drive)) }
         $picked = Select-RemovableVolume
         if (-not $picked) {
-            Add-LogEntry 'Aucun disque sélectionné : abandon.'
+            Add-LogEntry 'No drive selected: aborted.'
             exit 2
         }
         $letter = $picked.Letter
@@ -484,92 +688,80 @@ try {
 
     $disk = Get-DiskInfo $letter
     if (-not $disk) {
-        throw "Le lecteur ${letter}: n'existe pas ou n'est pas accessible.`r`nVérifiez la carte, puis relancez."
+        throw (Get-UiText 'ErrorDriveMissing' @($letter))
     }
 
     $systemLetter = $env:SystemDrive.Substring(0, 1)
     if ($letter -eq $systemLetter) {
-        throw "Le disque système (${letter}:) ne peut pas être formaté par cet outil."
+        throw (Get-UiText 'ErrorSystemDrive' @($letter))
     }
 
     $driveType = [int]$disk.DriveType
     if ($driveType -eq 4 -or $driveType -eq 5) {
-        throw ("Le lecteur {0}: est de type « {1} » : formatage impossible." -f $letter, (Get-DriveTypeName $driveType))
+        throw (Get-UiText 'ErrorUnsupportedType' @($letter, (Get-DriveTypeName $driveType)))
     }
     if ($driveType -ne 2 -and -not $AllowFixed) {
-        $message = "Le lecteur {0}: est de type « {1} » et non « Amovible »." -f $letter, (Get-DriveTypeName $driveType)
-        $message += "`r`n`r`nCet outil est réservé aux cartes SD et clés USB."
-        $message += "`r`nSi un lecteur de cartes se déclare « Fixe », utilisez l'option -AllowFixed."
-        throw $message
+        throw (Get-UiText 'ErrorNotRemovable' @($letter, (Get-DriveTypeName $driveType)))
     }
     if (-not $disk.Size) {
-        throw "Aucun média détecté dans le lecteur ${letter}:`r`nInsérez une carte, puis relancez."
+        throw (Get-UiText 'ErrorNoMedia' @($letter))
     }
 
     $sizeBytes = [uint64]$disk.Size
     if ($sizeBytes -gt 2TB) {
-        throw ("Le volume fait {0} : au-delà de la limite FAT32 (2 To)." -f (Format-Size $sizeBytes))
+        throw (Get-UiText 'ErrorTooBig' @((Format-Size $sizeBytes)))
     }
 
     $buildInfo = Get-WindowsBuildInfo
-    if ($sizeBytes -gt 32GB -and -not $buildInfo.SupportsLargeFat32 -and -not $SkipVersionCheck) {
-        $message = "Ce PC ne peut pas créer un volume FAT32 de plus de 32 Go.`r`n`r`n" +
-            "Version détectée : $($buildInfo.VersionText)`r`n" +
-            "Version requise  : Windows 11 24H2 build 26100.8313 ou 25H2 build 26200.8313 (ou ultérieure).`r`n`r`n" +
-            "Mettez Windows à jour (Paramètres > Windows Update), puis relancez.`r`n" +
-            "Pour passer outre ce contrôle : option -SkipVersionCheck."
-        throw $message
-    }
     if ($sizeBytes -gt 32GB -and -not $buildInfo.SupportsLargeFat32) {
-        Add-LogEntry ("Contrôle de version ignoré (build {0}.{1})." -f $buildInfo.Build, $buildInfo.UBR)
+        if (-not $SkipVersionCheck) {
+            throw (Get-UiText 'ErrorBuildTooOld' @($buildInfo.VersionText))
+        }
+        Add-LogEntry ("Build check bypassed (build {0}.{1})." -f $buildInfo.Build, $buildInfo.UBR)
     }
 
     $currentLabel = [string]$disk.VolumeName
     $newLabel = $currentLabel
     if ($Label) { $newLabel = $Label }
     if ($newLabel.Length -gt 11) { $newLabel = $newLabel.Substring(0, 11) }
-    $currentFs = if ($disk.FileSystem) { [string]$disk.FileSystem } else { 'RAW' }
+    $currentFs = if ($disk.FileSystem) { [string]$disk.FileSystem } else { Get-UiText 'VolumeRaw' }
 
     $clusterBytes = 0
     if ($ClusterSizeKb -gt 0) { $clusterBytes = $ClusterSizeKb * 1KB }
 
-    $labelBefore = if ($currentLabel) { $currentLabel } else { '(sans nom)' }
-    $labelAfter = if ($newLabel) { $newLabel } else { '(sans nom)' }
+    $labelBefore = if ($currentLabel) { $currentLabel } else { Get-UiText 'VolumeNoLabel' }
+    $labelAfter = if ($newLabel) { $newLabel } else { Get-UiText 'VolumeNoLabel' }
     $sizeText = Format-Size $sizeBytes
+    $supportText = if ($buildInfo.SupportsLargeFat32) { Get-UiText 'SupportYes' } else { Get-UiText 'SupportNo' }
 
     $previewArgs = @(('{0}:' -f $letter), '/FS:FAT32', '/Q', '/Y')
     if ($newLabel) { $previewArgs += ('/V:{0}' -f $newLabel) }
     if ($clusterBytes) { $previewArgs += ('/A:{0}' -f $clusterBytes) }
 
     if ($DryRun) {
-        Write-Host 'Plan de formatage (simulation)'
-        Write-Host '------------------------------'
-        Write-Host ('Lecteur             : {0}:' -f $letter)
-        Write-Host ('Libellé             : {0} -> {1}' -f $labelBefore, $labelAfter)
-        Write-Host ('Système de fichiers : {0} -> FAT32' -f $currentFs)
-        Write-Host ('Capacité            : {0}' -f $sizeText)
-        Write-Host ('Type                : {0}' -f (Get-DriveTypeName $driveType))
-        Write-Host 'Formatage           : rapide'
-        Write-Host ('Windows             : {0} (FAT32 > 32 Go : {1})' -f $buildInfo.VersionText, $(if ($buildInfo.SupportsLargeFat32) { 'pris en charge' } else { 'NON pris en charge' }))
-        Write-Host ('Commande            : format {0}' -f ($previewArgs -join ' '))
+        try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+        Write-Host (Get-UiText 'DryRunTitle')
+        Write-Host ('-' * 62)
+        Write-Host (Get-UiText 'DryRunDrive' @($letter))
+        Write-Host (Get-UiText 'DryRunLabel' @($labelBefore, $labelAfter))
+        Write-Host (Get-UiText 'DryRunFs' @($currentFs))
+        Write-Host (Get-UiText 'DryRunCapacity' @($sizeText))
+        Write-Host (Get-UiText 'DryRunType' @((Get-DriveTypeName $driveType)))
+        Write-Host (Get-UiText 'DryRunQuick')
+        Write-Host (Get-UiText 'DryRunWindows' @($buildInfo.VersionText, $supportText))
+        Write-Host (Get-UiText 'DryRunCommand' @($previewArgs -join ' '))
         exit 0
     }
 
-    $isRemovableText = if ($driveType -eq 2) { 'oui' } else { 'NON (option -AllowFixed)' }
-    $confirm = "Formater le disque ${letter}: en FAT32 ?`r`n`r`n" +
-        "Libellé            : $labelBefore`r`n" +
-        "Capacité           : $sizeText`r`n" +
-        "Système actuel     : $currentFs`r`n" +
-        "Disque amovible    : $isRemovableText`r`n" +
-        "Windows            : $($buildInfo.VersionText)`r`n`r`n" +
-        "Toutes les données de ce disque seront définitivement effacées.`r`n" +
-        "Continuer ?"
-    Add-LogEntry ("Demande de formatage : lecteur={0} type={1} fs={2} taille={3} libellé='{4}'" -f $letter, $driveType, $currentFs, $sizeBytes, $currentLabel)
+    $removableText = if ($driveType -eq 2) { Get-UiText 'RemovableYes' } else { Get-UiText 'RemovableNo' }
+    $confirm = Get-UiText 'ConfirmBody' @($letter, $labelBefore, $sizeText, $currentFs, $removableText, $buildInfo.VersionText)
+
+    Add-LogEntry ("Format request: drive={0} type={1} fs={2} size={3} label='{4}' lang={5}" -f $letter, $driveType, $currentFs, $sizeBytes, $currentLabel, $script:LanguageCode)
 
     if (-not $Yes) {
-        $answer = Show-Dialog -Text $confirm -Title 'Confirmer le formatage FAT32' -Icon Warning -Buttons YesNo
+        $answer = Show-Dialog -Text $confirm -Title (Get-UiText 'ConfirmTitle') -Icon Warning -Buttons YesNo
         if ($answer -ne 'Yes') {
-            Add-LogEntry "Formatage annulé par l'utilisateur."
+            Add-LogEntry 'Cancelled by user.'
             exit 2
         }
     }
@@ -578,7 +770,7 @@ try {
     $result = Invoke-NativeFormat -Letter $letter -NewLabel $newLabel -ClusterBytes $clusterBytes
     $watch.Stop()
 
-    Add-LogEntry ("{0} -> code {1}" -f $result.Command, $result.ExitCode)
+    Add-LogEntry ("{0} -> exit code {1}" -f $result.Command, $result.ExitCode)
     if ($result.Output) { Add-LogEntry $result.Output }
 
     $after = Wait-ForFat32 -Letter $letter
@@ -587,46 +779,32 @@ try {
     if (-not $success) {
         $details = [string]$result.Output
         if ($details.Length -gt 1200) { $details = $details.Substring($details.Length - 1200) }
-        Add-LogEntry ("ÉCHEC du formatage (code {0})" -f $result.ExitCode)
-        $failureText = "Le formatage de ${letter}: en FAT32 a échoué.`r`n`r`n" +
-            "Causes possibles :`r`n" +
-            "- version de Windows trop ancienne pour créer du FAT32 au-delà de 32 Go`r`n" +
-            "  (vérifiez avec winver : la limite en ligne de commande a été levée à partir`r`n" +
-            "  des builds 26100.8313 et 26200.8313 ; sinon mettez Windows à jour) ;`r`n" +
-            "- carte en protection en écriture ou occupée par un autre programme ;`r`n" +
-            "- carte défectueuse.`r`n`r`n" +
-            "Sortie de $($result.Tool) (code $($result.ExitCode)) :`r`n$details`r`n`r`n" +
-            "Journal : $(Get-LogPath)"
-        Show-Dialog -Icon Error -Title 'Échec du formatage' -Text $failureText | Out-Null
+        Add-LogEntry ("Format FAILED (exit code {0})." -f $result.ExitCode)
+        $failureText = Get-UiText 'FailureBody' @($letter, $result.Tool, $result.ExitCode, $details, (Get-LogPath))
+        Show-Dialog -Icon Error -Title (Get-UiText 'FailureTitle') -Text $failureText | Out-Null
         exit 3
     }
 
     $volume = Get-VolumeDetails $letter
-    $clusterText = 'inconnue'
-    if ($volume -and $volume.BlockSize) { $clusterText = '{0:N0} Ko' -f ($volume.BlockSize / 1KB) }
+    $clusterText = Get-UiText 'ClusterUnknown'
+    if ($volume -and $volume.BlockSize) { $clusterText = ('{0:N0} {1}' -f ($volume.BlockSize / 1KB), (Get-UiText 'SizeKB')) }
     $finalLabel = [string]$after.VolumeName
-    if (-not $finalLabel) { $finalLabel = '(sans nom)' }
+    if (-not $finalLabel) { $finalLabel = Get-UiText 'VolumeNoLabel' }
 
-    Add-LogEntry ("SUCCÈS : {0}: formaté en FAT32, libellé='{1}', durée={2:N1}s" -f $letter, $finalLabel, $watch.Elapsed.TotalSeconds)
+    Add-LogEntry ("SUCCESS: {0}: formatted as FAT32, label='{1}', duration={2:N1}s" -f $letter, $finalLabel, $watch.Elapsed.TotalSeconds)
 
-    $successText = "Le disque ${letter}: est maintenant en FAT32.`r`n`r`n" +
-        "Libellé             : $finalLabel`r`n" +
-        "Capacité            : $(Format-Size ([uint64]$after.Size))`r`n" +
-        "Taille des clusters : $clusterText`r`n" +
-        "Durée               : $([int]$watch.Elapsed.TotalSeconds) s`r`n`r`n" +
-        "Rappel : en FAT32, un fichier ne peut pas dépasser 4 Go.`r`n`r`n" +
-        "Journal : $(Get-LogPath)"
-    Show-Dialog -Icon Information -Title 'Formatage terminé' -Text $successText | Out-Null
+    $successText = Get-UiText 'SuccessBody' @($letter, $finalLabel, (Format-Size ([uint64]$after.Size)), $clusterText, [int]$watch.Elapsed.TotalSeconds, (Get-LogPath))
+    Show-Dialog -Icon Information -Title (Get-UiText 'SuccessTitle') -Text $successText | Out-Null
 
     exit 0
 }
 catch {
     $message = $_.Exception.Message
-    Add-LogEntry ("ERREUR : {0}" -f $message)
+    Add-LogEntry ("ERROR: {0}" -f $message)
     if ($DryRun) {
-        Write-Host ("ERREUR : {0}" -f $message) -ForegroundColor Red
+        Write-Host ("ERROR: {0}" -f $message) -ForegroundColor Red
         exit 1
     }
-    Show-Dialog -Icon Error -Title 'Format FAT32' -Text ("$message`r`n`r`nJournal : $(Get-LogPath)") | Out-Null
+    Show-Dialog -Icon Error -Title (Get-UiText 'ErrorTitle') -Text (Get-UiText 'ErrorBody' @($message, (Get-LogPath))) | Out-Null
     exit 1
 }

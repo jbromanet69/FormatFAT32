@@ -1,18 +1,18 @@
-name: lint
+name: build
 
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
 jobs:
-  psscriptanalyzer:
-    name: PSScriptAnalyzer
+  lint:
+    name: Lint (PSScriptAnalyzer)
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install PSScriptAnalyzer
         shell: pwsh
@@ -42,7 +42,7 @@ jobs:
           if ($failed) { throw 'Syntax errors found.' }
           Write-Host 'Syntax OK.'
 
-      - name: Run PSScriptAnalyzer
+      - name: PSScriptAnalyzer
         shell: pwsh
         run: |
           $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 `
@@ -55,3 +55,49 @@ jobs:
             throw "$($results.Count) PSScriptAnalyzer finding(s)."
           }
           Write-Host 'PSScriptAnalyzer: no findings.'
+
+      - name: Every language file has the same keys
+        shell: pwsh
+        run: |
+          $reference = Import-PowerShellDataFile -LiteralPath ./lang/en.psd1
+          $referenceKeys = $reference.Keys | Sort-Object
+          $failed = $false
+          Get-ChildItem ./lang -Filter *.psd1 | ForEach-Object {
+            $data = Import-PowerShellDataFile -LiteralPath $_.FullName
+            $missing = @($referenceKeys | Where-Object { -not $data.ContainsKey($_) })
+            $extra = @($data.Keys | Where-Object { $referenceKeys -notcontains $_ })
+            if ($missing.Count -or $extra.Count) {
+              $failed = $true
+              Write-Host "::error file=$($_.Name)::missing=[$($missing -join ',')] extra=[$($extra -join ',')]"
+            }
+          }
+          if ($failed) { throw 'Language files are out of sync.' }
+          Write-Host 'All language files are in sync.'
+
+  installer:
+    name: Build installer
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            throw 'ISCC.exe not found after installation.'
+          }
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' .\installer\FormatFAT32.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE." }
+
+      - name: Upload setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: FormatFAT32-setup
+          path: dist/*.exe
+          if-no-files-found: error

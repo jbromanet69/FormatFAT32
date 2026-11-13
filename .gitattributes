@@ -1,4 +1,4 @@
-# Normalisation des fins de ligne
+﻿# Normalisation des fins de ligne
 * text=auto
 
 *.ps1   text eol=crlf
@@ -8,3 +8,9 @@
 *.gitignore text eol=lf
 *.gitattributes text eol=lf
 LICENSE text eol=lf
+
+# Binaires
+*.ico binary
+*.png binary
+*.exe binary
+*.vbs text eol=crlf

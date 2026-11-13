@@ -1,4 +1,4 @@
-# Journaux produits par l'outil / logs written by the tool
+﻿# Journaux produits par l'outil / logs written by the tool
 *.log
 logs/
 
@@ -8,6 +8,9 @@ fat32format-*.zip
 
 # Archives de distribution / distribution archives
 *.zip
+
+# Sortie de compilation de l'installateur / installer build output
+dist/
 
 # Windows / éditeurs / editors
 Thumbs.db
