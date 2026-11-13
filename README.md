@@ -108,6 +108,12 @@ powershell -ExecutionPolicy Bypass -File .\Install-FormatFAT32.ps1 -Hive HKCU -L
 The installer ends with a checklist (`[OK]` lines) and states whether this Windows build
 supports FAT32 above 32 GB.
 
+### Portable ZIP
+
+`Build-Package.ps1` builds `dist\FormatFAT32-<version>-portable.zip` containing the
+scripts, the 7 language files, the launcher and the documentation — for colleagues who
+prefer a folder they can unzip and install with `Install-FormatFAT32.ps1`.
+
 ## Usage
 
 - **Right-click a drive in File Explorer** → *Format as FAT32*.
@@ -175,6 +181,7 @@ FormatFAT32/
 ├─ Uninstall-FormatFAT32.ps1    # its uninstaller
 ├─ lang\                        # UI strings: en fr de es it pt nl
 ├─ installer\FormatFAT32.iss    # Inno Setup script for the .exe installer
+├─ Build-Package.ps1            # builds the portable ZIP (scripts + languages)
 ├─ tools\New-Icon.ps1           # generates FormatFAT32.ico and docs\logo.png
 ├─ docs\                        # screenshots and logo used by the READMEs
 ├─ .github\workflows\           # lint + installer build
