@@ -44,7 +44,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'FormatFAT32'
-$script:Version = '1.2.0'
+$script:Version = '1.2.1'
 $script:MenuText = 'Formater en FAT32'
 
 function Test-IsAdmin {

@@ -72,7 +72,7 @@ FAT32 sans difficulté ; seule sa *création* exige une build récente.
 
 ### Recommandé : le programme d'installation
 
-Téléchargez `FormatFAT32-1.2.0-setup.exe` depuis les
+Téléchargez `FormatFAT32-1.2.1-setup.exe` depuis les
 [Releases](https://github.com/jbromanet69/FormatFAT32/releases) et exécutez-le.
 
 - Le setup existe en **7 langues** ; la langue choisie devient celle de l'application.
@@ -86,8 +86,8 @@ Téléchargez `FormatFAT32-1.2.0-setup.exe` depuis les
 Déploiement silencieux / scripté :
 
 ```bat
-FormatFAT32-1.2.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-FormatFAT32-1.2.0-setup.exe /VERYSILENT /CURRENTUSER /LANG=fr /SUPPRESSMSGBOXES
+FormatFAT32-1.2.1-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+FormatFAT32-1.2.1-setup.exe /VERYSILENT /CURRENTUSER /LANG=fr /SUPPRESSMSGBOXES
 ```
 
 ### Alternative : l'installateur PowerShell

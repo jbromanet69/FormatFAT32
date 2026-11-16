@@ -552,11 +552,27 @@ function Select-RemovableVolume {
 # Formatting
 # --------------------------------------------------------------------------
 
+# Single source of truth for the command line, so -DryRun prints exactly what
+# will be executed. A [string] parameter turned 0 into '0' (truthy) and sent
+# "/A:0", which format.com rejects with "invalid parameter" and exit code 4.
+function Get-FormatArguments {
+    param(
+        [string]$Letter,
+        [string]$NewLabel,
+        [int]$ClusterBytes = 0
+    )
+
+    $arguments = @(('{0}:' -f $Letter), '/FS:FAT32', '/Q', '/Y')
+    if ($NewLabel) { $arguments += ('/V:{0}' -f $NewLabel) }
+    if ($ClusterBytes -gt 0) { $arguments += ('/A:{0}' -f $ClusterBytes) }
+    return $arguments
+}
+
 function Invoke-NativeFormat {
     param(
         [string]$Letter,
         [string]$NewLabel,
-        [string]$ClusterBytes
+        [int]$ClusterBytes = 0
     )
 
     $exe = Join-Path $env:SystemRoot 'System32\format.com'
@@ -564,9 +580,7 @@ function Invoke-NativeFormat {
         throw (Get-UiText 'ErrorFormatMissing' @($env:SystemRoot))
     }
 
-    $arguments = @(('{0}:' -f $Letter), '/FS:FAT32', '/Q', '/Y')
-    if ($NewLabel) { $arguments += ('/V:{0}' -f $NewLabel) }
-    if ($ClusterBytes) { $arguments += ('/A:{0}' -f $ClusterBytes) }
+    $arguments = Get-FormatArguments -Letter $Letter -NewLabel $NewLabel -ClusterBytes $ClusterBytes
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $exe
@@ -576,6 +590,11 @@ function Invoke-NativeFormat {
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    # format.com writes ANSI bytes when redirected: decoding them with the
+    # console code page displayed "Paramètre" as "ParamÞtre".
+    $ansi = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+    $startInfo.StandardOutputEncoding = $ansi
+    $startInfo.StandardErrorEncoding = $ansi
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
@@ -734,9 +753,7 @@ try {
     $sizeText = Format-Size $sizeBytes
     $supportText = if ($buildInfo.SupportsLargeFat32) { Get-UiText 'SupportYes' } else { Get-UiText 'SupportNo' }
 
-    $previewArgs = @(('{0}:' -f $letter), '/FS:FAT32', '/Q', '/Y')
-    if ($newLabel) { $previewArgs += ('/V:{0}' -f $newLabel) }
-    if ($clusterBytes) { $previewArgs += ('/A:{0}' -f $clusterBytes) }
+    $previewArgs = Get-FormatArguments -Letter $letter -NewLabel $newLabel -ClusterBytes $clusterBytes
 
     if ($DryRun) {
         try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
@@ -766,6 +783,8 @@ try {
         }
     }
 
+    $serialBefore = [string]$disk.VolumeSerialNumber
+
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $result = Invoke-NativeFormat -Letter $letter -NewLabel $newLabel -ClusterBytes $clusterBytes
     $watch.Stop()
@@ -774,7 +793,13 @@ try {
     if ($result.Output) { Add-LogEntry $result.Output }
 
     $after = Wait-ForFat32 -Letter $letter
-    $success = [bool]($after -and ([string]$after.FileSystem).ToUpperInvariant() -eq 'FAT32' -and [uint64]$after.Size -gt 0)
+    $volumeState = if ($after) { 'fs={0} size={1} serial={2}' -f $after.FileSystem, $after.Size, $after.VolumeSerialNumber } else { 'volume missing' }
+    Add-LogEntry ("Volume after format: {0} (serial before: {1})" -f $volumeState, $serialBefore)
+
+    # A non-zero exit code means format.com wrote nothing, even when the volume
+    # already reported FAT32 before the call.
+    $volumeIsFat32 = [bool]($after -and ([string]$after.FileSystem).ToUpperInvariant() -eq 'FAT32' -and [uint64]$after.Size -gt 0)
+    $success = ($result.ExitCode -eq 0) -and $volumeIsFat32
 
     if (-not $success) {
         $details = [string]$result.Output

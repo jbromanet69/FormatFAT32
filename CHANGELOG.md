@@ -6,6 +6,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-11-16
+
+### Fixed
+
+- The format was never executed: `Invoke-NativeFormat` declared the cluster size as
+  `[string]`, so the default `0` became the string `'0'` — truthy — and `/A:0` was
+  appended to the command line. `format.com` rejects that parameter (« Paramètre non
+  valide », exit code 4) before writing anything, leaving the card untouched.
+- The failure was reported as a success: the verdict only looked at the volume file
+  system, so a card that was already FAT32 kept its data while the script announced
+  « Format completed ». Success now also requires `format.com` to exit with 0.
+- `-DryRun` could not catch the bug because it built its own command line, where `0`
+  stayed an `[int]` and the `/A:` switch was omitted. Preview and execution now share
+  `Get-FormatArguments`, so the simulation prints exactly the command that will run.
+- `format.com` output was decoded with the console code page instead of the ANSI one,
+  which turned « Paramètre » into « ParamÞtre » in the log and the failure dialog.
+- The log now records the volume serial number before and after the format, so a
+  support log tells whether the volume was really rewritten.
+
 ### Changed
 
 - The build workflow uses `actions/checkout@v7`, `actions/upload-artifact@v7` and
